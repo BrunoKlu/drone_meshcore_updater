@@ -252,7 +252,9 @@ struct Parameters {
 	 * Adafruit/RAK bootloaders (0.4.x, S140 6.1.1) accept the MTU exchange
 	 * and then silently drop every packet larger than 20 bytes, which
 	 * shows up as a Packet Receipt Notification timeout at 1 %. OTAFIX
-	 * bootloaders take the negotiated size. 0 disables the rule.
+	 * bootloaders take the negotiated size. 0 disables the rule. Values above
+	 * what the un-exchanged MTU carries (20) or above
+	 * CONFIG_NORDIC_LEGACY_DFU_MAX_PACKET_SIZE are clamped with a warning.
 	 */
 	uint16_t legacy_payload = 20;
 	/**
@@ -310,6 +312,8 @@ struct Report {
 	bool address_may_change = false;
 	/** The bootloader's DIS firmware revision contained "OTAFIX". */
 	bool otafix = false;
+	/** This run continued an upload left by an earlier connection. */
+	bool resumed = false;
 };
 
 /** Notification sink. All calls come from the thread that called run(). */

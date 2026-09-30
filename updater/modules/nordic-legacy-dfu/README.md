@@ -156,6 +156,7 @@ the whole image with a lower `packets_before_notification`.
    no per-request MTU as with Android's `requestMtu(int)`. `Parameters::mtu` is
    therefore only a switch for whether to do the exchange at all. Payload per
    packet is `min(ATT_MTU - 3, CONFIG_NORDIC_LEGACY_DFU_MAX_PACKET_SIZE)`.
+   Towards a legacy (non-OTAFIX) bootloader the exchange is skipped, see 8.
 4. **Timeouts.** The Java blocks indefinitely on every response, relying on the
    user to cancel. `Parameters::operation_timeout_ms` defaults to `0`, which is
    the same behaviour; set it if a headless device should fail rather than
@@ -166,6 +167,25 @@ the whole image with a lower `packets_before_notification`.
    `DfuBaseService` without one — the next attempt then gets `INVALID STATE`
    and recovers through `resetAndRestart`. This client sends `Reset` in that
    case too, reaching the same end state one connection earlier.
+7. **Resume instead of reset on a legacy bootloader.** After a link loss
+   mid-upload the target keeps the partial image and answers `INVALID STATE`
+   to the next `Start DFU`; `LegacyDfuImpl.resetAndRestart()` resets it. A
+   single-bank Adafruit/RAK bootloader that has already erased the
+   application then reboots into USB mode, unreachable over the air. With
+   `Parameters::resume_interrupted` (default on) the client instead asks the
+   target how many bytes it holds (`Report Received Image Size`, op 0x07) and
+   continues from there, and it never sends `Reset` to such a bootloader on
+   any failure path, including an abort. A peer whose Device Information
+   firmware revision contains "OTAFIX" keeps the Java behaviour, which it
+   survives. The caller is trusted to offer the same image that was
+   interrupted.
+8. **Packet size by bootloader.** A stock Adafruit/RAK bootloader (0.4.x,
+   S140 6.1.1) accepts the MTU exchange and then silently drops every packet
+   larger than 20 bytes. The client reads the Device Information firmware
+   revision (0x2A26, at the pre-exchange MTU, so only its first 22
+   characters) and, unless it says "OTAFIX", skips the exchange and uses
+   `Parameters::legacy_payload` (default 20) — the only size the
+   un-exchanged link carries; larger values are clamped with a warning.
 6. **Image size when the application bit is dropped.** When a target answers
    `NOT SUPPORTED` to a combined (SD/BL)+App update, `LegacyDfuImpl` calls
    `ArchiveInputStream.setContentType()` — which stops the stream yielding the
@@ -178,9 +198,9 @@ the whole image with a lower `packets_before_notification`.
 
 Everything else — the order of operations, the `NOT_SUPPORTED` fallback chain,
 the DFU v.1 downgrade, the PRN clamp for pre-SDK-7 bootloaders, the
-`INVALID STATE` reset, the version-5 init packet requirement, the `Reset`
-before terminating, and not disconnecting after `Activate and Reset` — follows
-the Java.
+`INVALID STATE` reset and the `Reset` before terminating (both towards an
+OTAFIX peer, see 7), the version-5 init packet requirement, and not
+disconnecting after `Activate and Reset` — follows the Java.
 
 ## Configuration
 
@@ -196,7 +216,9 @@ the Java.
 `Parameters` carries the per-run settings that `DfuServiceInitiator` carries on
 Android: `packets_before_notification` (12, as
 `DfuServiceInitiator.DEFAULT_PRN_VALUE`), `mtu`, `assume_dfu_mode`
-(`setForceDfu()`), `operation_timeout_ms` and `reset_timeout_ms`.
+(`setForceDfu()`), `operation_timeout_ms` and `reset_timeout_ms`; and two
+without an Android counterpart, `legacy_payload` and `resume_interrupted`
+(deviations 7 and 8).
 
 ## Building
 

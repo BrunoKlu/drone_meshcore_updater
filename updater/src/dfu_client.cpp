@@ -457,6 +457,14 @@ extern "C" enum dfu_result dfu_client_run(const struct ble_scanner_target *targe
 	Report report = client.run(s_link.conn, firmware, params);
 	set_active(nullptr);
 
+	if (report.resumed) {
+		/* The target held an upload from an earlier connection and this run
+		 * continued it. Safe when it is the same bundle — which a retry
+		 * within one run guarantees, and a fresh run after a reboot does
+		 * NOT (auto-flash picks by advertised name). Say so, loudly. */
+		LOG_WRN("resumed an upload left by an earlier connection: the bundle sent "
+			"now must be the one that was interrupted");
+	}
 	if (report.result == Result::RemoteError) {
 		LOG_ERR("result=%s remote=0x%02x (%s) sent=%u",
 			result_str(report.result), report.remote,

@@ -544,7 +544,21 @@ Failure Session::open(bt_conn *conn, PeerMode *mode)
 	if (params_.legacy_payload != 0 && !otafix_ && *mode != PeerMode::ApplicationButtonless) {
 		/* No MTU exchange: a stock bootloader agrees to it and then drops
 		 * every packet larger than 20 bytes. */
+		/*
+		 * Without the exchange the ATT MTU stays 23, so 20 bytes is all
+		 * the link will carry: anything larger is clamped, not honoured.
+		 * Also bounded by the client's own buffer.
+		 */
+		uint16_t limite = link_.packet_payload_size();
+		if (limite > CONFIG_NORDIC_LEGACY_DFU_MAX_PACKET_SIZE) {
+			limite = CONFIG_NORDIC_LEGACY_DFU_MAX_PACKET_SIZE;
+		}
 		payload_size_ = params_.legacy_payload;
+		if (payload_size_ > limite) {
+			LOG_WRN("legacy_payload %u exceeds what the link carries without an MTU "
+				"exchange; using %u", payload_size_, limite);
+			payload_size_ = limite;
+		}
 		LOG_INF("packet payload %u bytes (legacy bootloader)", payload_size_);
 	} else {
 		if (params_.mtu != 0) {
@@ -625,6 +639,7 @@ Report Session::jump_to_bootloader()
 	report.result = Result::JumpedToBootloader;
 	report.version = version_;
 	report.otafix = otafix_;
+	report.resumed = resumed_;
 	report.address_may_change = (version_ == 0);
 	return report;
 }
@@ -1094,7 +1109,11 @@ Failure Session::finish()
 /*
  * Every failure path in LegacyDfuImpl.performDfu() sends Reset before
  * terminating the connection, so the next attempt finds a clean
- * bootloader rather than one stuck waiting for more data.
+ * bootloader rather than one stuck waiting for more data. That holds here
+ * for an OTAFIX peer (or with resume_interrupted off). A legacy bootloader
+ * is left as it is: it keeps the partial upload, and the next attempt
+ * resumes it — a Reset would reboot it with no application, unreachable
+ * over the air.
  */
 Report Session::terminate(const Failure &failure)
 {
@@ -1105,6 +1124,7 @@ Report Session::terminate(const Failure &failure)
 	report.err = failure.err;
 	report.version = version_;
 	report.otafix = otafix_;
+	report.resumed = resumed_;
 	report.bytes_sent = bytes_sent_;
 
 	switch (failure.result) {
@@ -1147,7 +1167,8 @@ Report Session::run(bt_conn *conn)
 		report.remote = f.remote;
 		report.err = f.err;
 		report.version = version_;
-	report.otafix = otafix_;
+		report.otafix = otafix_;
+		report.resumed = resumed_;
 		link_.unsubscribe_control_point();
 		link_.detach();
 		if (observer_ != nullptr) {
@@ -1219,7 +1240,8 @@ Report Session::run(bt_conn *conn)
 	} else {
 		report.result = application_pending_ ? Result::ApplicationPending : Result::Success;
 		report.version = version_;
-	report.otafix = otafix_;
+		report.otafix = otafix_;
+		report.resumed = resumed_;
 		report.bytes_sent = bytes_sent_;
 		set_state(State::Completed);
 	}
