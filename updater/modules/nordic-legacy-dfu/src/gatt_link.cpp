@@ -219,6 +219,10 @@ uint8_t GattLink::discover_services_cb(bt_conn *conn, const bt_gatt_attr *attr,
 		self->h_.service_start = attr->handle;
 		self->h_.service_end = svc->end_handle;
 	}
+	if (bt_uuid_cmp(svc->uuid, BT_UUID_DIS) == 0) {
+		self->h_.dis_start = attr->handle;
+		self->h_.dis_end = svc->end_handle;
+	}
 	return BT_GATT_ITER_CONTINUE;
 }
 
@@ -310,6 +314,74 @@ int GattLink::discover()
 /* ------------------------------------------------------------------ */
 /* Subscription and notifications                                      */
 /* ------------------------------------------------------------------ */
+
+uint8_t GattLink::discover_dis_cb(bt_conn *conn, const bt_gatt_attr *attr,
+				  bt_gatt_discover_params *params)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(params);
+	GattLink *self = s_active;
+	if (self == nullptr) {
+		return BT_GATT_ITER_STOP;
+	}
+	if (attr == nullptr) {
+		k_sem_give(&self->op_sem_);
+		return BT_GATT_ITER_STOP;
+	}
+	const bt_gatt_chrc *chrc = static_cast<const bt_gatt_chrc *>(attr->user_data);
+	if (bt_uuid_cmp(chrc->uuid, BT_UUID_DIS_FIRMWARE_REVISION) == 0) {
+		self->h_.dis_revision = chrc->value_handle;
+	}
+	return BT_GATT_ITER_CONTINUE;
+}
+
+int GattLink::read_revision(char *out, size_t out_len)
+{
+	if (out_len == 0) {
+		return -EINVAL;
+	}
+	out[0] = '\0';
+	if (h_.dis_start == 0) {
+		return -ENOENT;
+	}
+	if (h_.dis_revision == 0) {
+		int rc = run_discovery(BT_UUID_DIS_FIRMWARE_REVISION, BT_GATT_DISCOVER_CHARACTERISTIC,
+				       static_cast<uint16_t>(h_.dis_start + 1), h_.dis_end,
+				       discover_dis_cb);
+		if (rc != 0) {
+			return rc;
+		}
+		if (h_.dis_revision == 0) {
+			return -ENOENT;
+		}
+	}
+	memset(&read_params_, 0, sizeof(read_params_));
+	read_params_.func = read_cb;
+	read_params_.handle_count = 1;
+	read_params_.single.handle = h_.dis_revision;
+	read_params_.single.offset = 0;
+	att_err_ = 0;
+	read_len_ = 0;
+	k_sem_reset(&op_sem_);
+	int rc = bt_gatt_read(conn_, &read_params_);
+	if (rc != 0) {
+		return rc;
+	}
+	rc = wait(&op_sem_, CONFIG_NORDIC_LEGACY_DFU_GATT_TIMEOUT_MS);
+	if (rc != 0) {
+		return rc;
+	}
+	if (att_err_ != 0) {
+		return -EIO;
+	}
+	size_t n = read_len_;
+	if (n > out_len - 1) {
+		n = out_len - 1;
+	}
+	memcpy(out, read_buf_, n);
+	out[n] = '\0';
+	return 0;
+}
 
 uint8_t GattLink::notify_cb(bt_conn *conn, bt_gatt_subscribe_params *params, const void *data,
 			    uint16_t length)

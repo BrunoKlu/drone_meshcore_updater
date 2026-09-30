@@ -246,6 +246,28 @@ struct Parameters {
 	 * this to true to skip that heuristic and start DFU regardless.
 	 */
 	bool assume_dfu_mode = false;
+	/**
+	 * Packet payload to use against a bootloader whose Device Information
+	 * firmware revision does not contain "OTAFIX", in bytes. Stock
+	 * Adafruit/RAK bootloaders (0.4.x, S140 6.1.1) accept the MTU exchange
+	 * and then silently drop every packet larger than 20 bytes, which
+	 * shows up as a Packet Receipt Notification timeout at 1 %. OTAFIX
+	 * bootloaders take the negotiated size. 0 disables the rule.
+	 */
+	uint16_t legacy_payload = 20;
+	/**
+	 * When the target answers INVALID STATE to Start DFU — an earlier
+	 * connection was cut mid-upload — ask it how many bytes it holds
+	 * (Report Received Image Size, op 0x07) and continue from there,
+	 * instead of LegacyDfuImpl.resetAndRestart(). The Java resets because
+	 * it cannot know the previous image was this one; here the caller
+	 * guarantees it (the bundle is chosen by name or pinned by address),
+	 * and the reset is fatal to a single-bank bootloader that has already
+	 * erased the application: it reboots into USB mode, unreachable over
+	 * the air. Applies to legacy bootloaders; an OTAFIX peer keeps the
+	 * original reset-and-restart, which it survives.
+	 */
+	bool resume_interrupted = true;
 
 	/**
 	 * Per-operation timeout in milliseconds, or 0 for none.
@@ -286,6 +308,8 @@ struct Report {
 	 * `forceScanning || mVersion == 0` decision in LegacyButtonlessDfuImpl.
 	 */
 	bool address_may_change = false;
+	/** The bootloader's DIS firmware revision contained "OTAFIX". */
+	bool otafix = false;
 };
 
 /** Notification sink. All calls come from the thread that called run(). */

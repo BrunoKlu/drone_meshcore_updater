@@ -34,6 +34,7 @@ constexpr uint8_t OP_VALIDATE = 0x04;
 constexpr uint8_t OP_ACTIVATE_AND_RESET = 0x05;
 constexpr uint8_t OP_RESET = 0x06;
 constexpr uint8_t OP_PACKET_RECEIPT_NOTIF_REQ = 0x08;
+constexpr uint8_t OP_REPORT_RECEIVED_IMAGE_SIZE = 0x07;
 constexpr uint8_t OP_RESPONSE_CODE = 0x10;
 
 constexpr uint8_t DFU_STATUS_SUCCESS = 1;
@@ -120,6 +121,9 @@ private:
 	Failure send_init_packet();
 	Failure set_packet_receipt_notifications();
 	Failure upload_firmware();
+	Failure on_invalid_state();
+	Failure resume_after_interruption();
+	Failure read_received_size(uint32_t *out);
 	Failure finish();
 
 	/* Helpers, named after their Java counterparts */
@@ -204,11 +208,15 @@ private:
 	 * BaseCustomDfuImpl.finalize() achieves by restarting DfuService.
 	 */
 	bool application_pending_ = false;
+	uint32_t resume_from_ = 0;
+	bool resumed_ = false;
 
 	uint16_t packets_before_notification_ = 0;
 	uint32_t bytes_sent_ = 0;
 	uint8_t last_percent_ = 0xff;
 	uint16_t payload_size_ = 20;
+	bool otafix_ = false;
+	char revision_[40]{};
 
 	uint8_t buffer_[CONFIG_NORDIC_LEGACY_DFU_MAX_PACKET_SIZE];
 };
@@ -373,6 +381,74 @@ void Session::send_reset()
 	(void)link_.write_control_point(reset, sizeof(reset), true);
 }
 
+/* Response to op 0x07: 10 07 <status> <received size, little-endian u32>. */
+Failure Session::read_received_size(uint32_t *out)
+{
+	uint8_t buf[20];
+	uint8_t len = 0;
+
+	int rc = link_.wait_response(buf, &len, params_.operation_timeout_ms);
+	if (rc != 0) {
+		return map_gatt(rc);
+	}
+	if (len != 7 || buf[0] != OP_RESPONSE_CODE || buf[1] != OP_REPORT_RECEIVED_IMAGE_SIZE ||
+	    buf[2] != REMOTE_SUCCESS) {
+		LOG_ERR("invalid response for op 0x07: len %u [%02x %02x %02x]", len,
+			len > 0 ? buf[0] : 0, len > 1 ? buf[1] : 0, len > 2 ? buf[2] : 0);
+		return Failure::of(Result::InvalidResponse);
+	}
+	*out = static_cast<uint32_t>(buf[3]) | (static_cast<uint32_t>(buf[4]) << 8) |
+	       (static_cast<uint32_t>(buf[5]) << 16) | (static_cast<uint32_t>(buf[6]) << 24);
+	return Failure::ok();
+}
+
+/*
+ * The target holds an interrupted upload of this image. Ask where it
+ * stopped and carry on; never reset it (see Parameters::resume_interrupted).
+ */
+Failure Session::resume_after_interruption()
+{
+	const uint8_t request[] = {OP_REPORT_RECEIVED_IMAGE_SIZE};
+	LOG_WRN("target holds an interrupted upload; asking for the received size (Op Code = 7)");
+	link_.clear_response();
+	Failure f = write_op_code(request, sizeof(request));
+	if (f.failed()) {
+		return f;
+	}
+	uint32_t received = 0;
+	f = read_received_size(&received);
+	if (f.failed()) {
+		return f;
+	}
+	if (received > image_size_ || (received % 4) != 0) {
+		LOG_ERR("received size %u does not fit this image (%u bytes); not resuming",
+			received, image_size_);
+		return Failure::of(Result::InvalidResponse);
+	}
+	resume_from_ = received;
+	resumed_ = true;
+	LOG_INF("resuming at %u of %u bytes", received, image_size_);
+	return Failure::ok();
+}
+
+Failure Session::on_invalid_state()
+{
+	if (params_.resume_interrupted && !otafix_) {
+		return resume_after_interruption();
+	}
+	/*
+	 * LegacyDfuImpl.resetAndRestart(): an upload was interrupted in an
+	 * earlier connection. Resuming is not safe because there is no
+	 * guarantee it was the same firmware, so reset and start over on a
+	 * fresh connection.
+	 */
+	LOG_WRN("target in invalid state; resetting and restarting");
+	set_state(State::Disconnecting);
+	send_reset();
+	(void)link_.wait_disconnected(params_.reset_timeout_ms);
+	return Failure::of(Result::RestartRequired);
+}
+
 /* ------------------------------------------------------------------ */
 /* Setup and mode detection                                            */
 /* ------------------------------------------------------------------ */
@@ -449,14 +525,37 @@ Failure Session::open(bt_conn *conn, PeerMode *mode)
 
 	/* LegacyDfuImpl/LegacyButtonlessDfuImpl.performDfu(): MTU first,
 	 * then notifications. */
-	if (params_.mtu != 0) {
-		rc = link_.exchange_mtu(params_.mtu);
-		if (rc != 0) {
-			LOG_WRN("MTU exchange failed (%d), continuing at the current MTU", rc);
-		}
+	/*
+	 * Bootloader identity, from the Device Information Service. The DFU
+	 * Version characteristic cannot tell an OTAFIX bootloader from a stock
+	 * Adafruit one (both say 0.8); the firmware revision string can.
+	 */
+	otafix_ = false;
+	rc = link_.read_revision(revision_, sizeof(revision_));
+	if (rc == 0) {
+		otafix_ = strstr(revision_, "OTAFIX") != nullptr;
+		LOG_INF("DIS firmware revision '%s' (%s)", revision_,
+			otafix_ ? "OTAFIX" : "legacy bootloader");
+	} else if (rc == -ENOENT) {
+		LOG_INF("no DIS firmware revision: treating the peer as a legacy bootloader");
+	} else {
+		LOG_WRN("DIS revision unreadable (%d): treating the peer as a legacy bootloader", rc);
 	}
-	payload_size_ = link_.packet_payload_size();
-	LOG_INF("packet payload %u bytes", payload_size_);
+	if (params_.legacy_payload != 0 && !otafix_ && *mode != PeerMode::ApplicationButtonless) {
+		/* No MTU exchange: a stock bootloader agrees to it and then drops
+		 * every packet larger than 20 bytes. */
+		payload_size_ = params_.legacy_payload;
+		LOG_INF("packet payload %u bytes (legacy bootloader)", payload_size_);
+	} else {
+		if (params_.mtu != 0) {
+			rc = link_.exchange_mtu(params_.mtu);
+			if (rc != 0) {
+				LOG_WRN("MTU exchange failed (%d), continuing at the current MTU", rc);
+			}
+		}
+		payload_size_ = link_.packet_payload_size();
+		LOG_INF("packet payload %u bytes", payload_size_);
+	}
 
 	rc = link_.subscribe_control_point();
 	if (rc != 0) {
@@ -525,6 +624,7 @@ Report Session::jump_to_bootloader()
 
 	report.result = Result::JumpedToBootloader;
 	report.version = version_;
+	report.otafix = otafix_;
 	report.address_may_change = (version_ == 0);
 	return report;
 }
@@ -612,17 +712,7 @@ Failure Session::start_dfu()
 	}
 
 	if (status == REMOTE_INVALID_STATE) {
-		/*
-		 * LegacyDfuImpl.resetAndRestart(): an upload was interrupted in
-		 * an earlier connection. Resuming is not safe because there is
-		 * no guarantee it was the same firmware, so reset and start
-		 * over on a fresh connection.
-		 */
-		LOG_WRN("target in invalid state; resetting and restarting");
-		set_state(State::Disconnecting);
-		send_reset();
-		(void)link_.wait_disconnected(params_.reset_timeout_ms);
-		return Failure::of(Result::RestartRequired);
+		return on_invalid_state();
 	}
 
 	if (status == DFU_STATUS_SUCCESS) {
@@ -664,11 +754,7 @@ Failure Session::start_dfu()
 			return f;
 		}
 		if (status == REMOTE_INVALID_STATE) {
-			LOG_WRN("target in invalid state; resetting and restarting");
-			set_state(State::Disconnecting);
-			send_reset();
-			(void)link_.wait_disconnected(params_.reset_timeout_ms);
-			return Failure::of(Result::RestartRequired);
+			return on_invalid_state();
 		}
 		if (status != DFU_STATUS_SUCCESS) {
 			/* file_type_ is no longer APPLICATION alone, so the v.1
@@ -692,11 +778,7 @@ Failure Session::start_dfu()
 			return f;
 		}
 		if (status == REMOTE_INVALID_STATE) {
-			LOG_WRN("target in invalid state; resetting and restarting");
-			set_state(State::Disconnecting);
-			send_reset();
-			(void)link_.wait_disconnected(params_.reset_timeout_ms);
-			return Failure::of(Result::RestartRequired);
+			return on_invalid_state();
 		}
 		if (status != DFU_STATUS_SUCCESS) {
 			return Failure::remote_error(status);
@@ -823,7 +905,7 @@ Failure Session::upload_firmware()
 {
 	uint16_t packets_since_notification = 0;
 
-	bytes_sent_ = 0;
+	bytes_sent_ = resume_from_;
 	last_percent_ = 0xff;
 	link_.clear_response();
 	link_.clear_receipts();
@@ -1022,6 +1104,7 @@ Report Session::terminate(const Failure &failure)
 	report.remote = failure.remote;
 	report.err = failure.err;
 	report.version = version_;
+	report.otafix = otafix_;
 	report.bytes_sent = bytes_sent_;
 
 	switch (failure.result) {
@@ -1029,8 +1112,13 @@ Report Session::terminate(const Failure &failure)
 	case Result::InvalidResponse:
 	case Result::RemoteError:
 	case Result::FileError:
-		send_reset();
-		(void)link_.wait_disconnected(CONFIG_NORDIC_LEGACY_DFU_GATT_TIMEOUT_MS);
+		if (otafix_ || !params_.resume_interrupted) {
+			send_reset();
+			(void)link_.wait_disconnected(CONFIG_NORDIC_LEGACY_DFU_GATT_TIMEOUT_MS);
+		} else {
+			LOG_WRN("not resetting a legacy bootloader: it keeps the partial upload "
+				"and the next attempt resumes it");
+		}
 		break;
 	default:
 		break;
@@ -1059,6 +1147,7 @@ Report Session::run(bt_conn *conn)
 		report.remote = f.remote;
 		report.err = f.err;
 		report.version = version_;
+	report.otafix = otafix_;
 		link_.unsubscribe_control_point();
 		link_.detach();
 		if (observer_ != nullptr) {
@@ -1094,8 +1183,17 @@ Report Session::run(bt_conn *conn)
 		f = Failure::of(Result::FileError, -EINVAL);
 	} else {
 		f = start_dfu();
-		if (!f.failed()) {
+		if (!f.failed() && !(resumed_ && resume_from_ > 0)) {
+			/* A resume with data already received skips the init packet:
+			 * the target took it before the cut. With nothing received it
+			 * may still be waiting for it, or may already have it — an
+			 * INVALID STATE answer then means "already have it". */
 			f = send_init_packet();
+			if (f.failed() && resumed_ && f.result == Result::RemoteError &&
+			    f.remote == REMOTE_INVALID_STATE) {
+				LOG_WRN("init packet already held by the target; continuing");
+				f = Failure::ok();
+			}
 		}
 		if (!f.failed()) {
 			f = set_packet_receipt_notifications();
@@ -1121,6 +1219,7 @@ Report Session::run(bt_conn *conn)
 	} else {
 		report.result = application_pending_ ? Result::ApplicationPending : Result::Success;
 		report.version = version_;
+	report.otafix = otafix_;
 		report.bytes_sent = bytes_sent_;
 		set_state(State::Completed);
 	}

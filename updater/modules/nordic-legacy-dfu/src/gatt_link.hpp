@@ -31,6 +31,9 @@ struct Handles {
 	uint16_t control_point_ccc = 0;
 	uint16_t packet = 0;
 	uint16_t version = 0;
+	uint16_t dis_start = 0;    /* Device Information Service, if the peer has one */
+	uint16_t dis_end = 0;
+	uint16_t dis_revision = 0; /* Firmware Revision String (0x2A26) value handle */
 	/**
 	 * Number of primary services on the peer. LegacyButtonlessDfuImpl
 	 * uses `gatt.getServices().size() > 3` to tell an application from a
@@ -64,6 +67,14 @@ public:
 
 	/* ---- operations ---- */
 	int read_version(uint16_t *out);
+	/**
+	 * Read the Device Information Service's Firmware Revision String into
+	 * `out` (NUL-terminated, truncated to out_len - 1). Returns 0 when
+	 * read, -ENOENT when the peer has no DIS or no revision characteristic,
+	 * or a GATT errno. Nothing else in the DFU flow depends on it: callers
+	 * treat an unreadable revision as "unknown bootloader".
+	 */
+	int read_revision(char *out, size_t out_len);
 
 	/**
 	 * Write to the Control Point and wait for the ATT response.
@@ -127,6 +138,8 @@ private:
 					    bt_gatt_discover_params *params);
 	static uint8_t discover_chars_cb(bt_conn *conn, const bt_gatt_attr *attr,
 					 bt_gatt_discover_params *params);
+	static uint8_t discover_dis_cb(bt_conn *conn, const bt_gatt_attr *attr,
+				       bt_gatt_discover_params *params);
 	static uint8_t discover_ccc_cb(bt_conn *conn, const bt_gatt_attr *attr,
 				       bt_gatt_discover_params *params);
 	static uint8_t notify_cb(bt_conn *conn, bt_gatt_subscribe_params *params,
@@ -163,7 +176,7 @@ private:
 	uint8_t response_len_ = 0;
 	volatile bool response_pending_ = false;
 
-	uint8_t read_buf_[8]{};
+	uint8_t read_buf_[48]{};
 	uint16_t read_len_ = 0;
 
 	/*
