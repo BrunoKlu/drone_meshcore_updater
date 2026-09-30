@@ -124,6 +124,11 @@ struct app_config {
 	 * failures use the short retry_cooldown.
 	 */
 	uint16_t wedge_cooldown;
+	/* Packet payload towards a bootloader that is not OTAFIX (20..244).
+	 * Stock Adafruit/RAK bootloaders drop packets larger than 20 bytes
+	 * after agreeing to a bigger MTU; 20 is the only safe value for them.
+	 * OTAFIX peers use the negotiated size (high_mtu) regardless. */
+	uint16_t legacy_payload;
 
 	/* BLE transmit power in dBm. **The ladder is per radio**, and the
 	 * accepted range spans all of them (-40..20):

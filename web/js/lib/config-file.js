@@ -575,6 +575,20 @@ export const CONFIG_SCHEMA = [
            unsticks when its own watchdog fires, 60-120 s on stock Adafruit
            bootloaders, so raise this if failures repeat immediately.`,
   },
+  {
+    key: "legacy_payload",
+    label: "legacy_payload",
+    title: "Packet payload towards a bootloader that is not OTAFIX",
+    type: "int",
+    def: 20,
+    min: 20,
+    max: 244,
+    unit: "B",
+    desc: `Stock Adafruit/RAK bootloaders (0.4.x) agree to a bigger MTU and then
+           silently drop every packet larger than 20 bytes, which shows up as a
+           receipt timeout at 1 %. OTAFIX bootloaders take the negotiated size
+           regardless of this. Leave 20 unless you know the bootloader takes more.`,
+  },
 ];
 
 /* Flat key → descriptor lookup. */

@@ -37,6 +37,7 @@ static const char kDefaultConfig[] =
 	"min_rssi=-75\n"
 	"retry_cooldown=5\n"
 	"wedge_cooldown=10\n"
+	"legacy_payload=20\n"
 	"ble_tx_power=8\n"
 	"wifi_tx_power=20\n"
 	"scan_timeout=0\n"

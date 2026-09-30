@@ -69,6 +69,7 @@ static void apply_defaults(struct app_config *c)
 	c->min_rssi       = -75;
 	c->retry_cooldown = 5;
 	c->wedge_cooldown = 10;
+	c->legacy_payload = 20;
 	/* Must be one of the levels the nRF54L actually implements (see the
 	 * list in config.h) — anything else is silently clipped by the
 	 * SoftDevice, so a "default" that isn't on the list is a default the
@@ -164,6 +165,8 @@ static void apply_kv(struct app_config *c, const char *key, const char *val)
 		if (n >= 0 && n <= 600) c->retry_cooldown = (uint16_t)n;
 	} else if (!strcmp(key, "wedge_cooldown")) {
 		if (n >= 0 && n <= 600) c->wedge_cooldown = (uint16_t)n;
+	} else if (!strcmp(key, "legacy_payload")) {
+		if (n >= 20 && n <= 244) c->legacy_payload = (uint16_t)n;
 	} else if (!strcmp(key, "ble_tx_power") || !strcmp(key, "tx_power")) {
 		/* `tx_power` is the old name, kept as an alias because a
 		 * silently-ignored key would leave a device running at a
