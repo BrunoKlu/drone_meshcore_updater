@@ -159,33 +159,77 @@ static int garde_signal(const struct app_config *cfg, const bt_addr_le_t *addr)
 	if (cfg->rssi_stable_s == 0) {
 		return 0;
 	}
+	/* On the survey, not on one-shot finds: a find restarts the scan every
+	 * time and, with a 50 % scan duty cycle, misses the peer about one
+	 * time in two, so "five hits in a row" was mostly luck (bench, 01/10).
+	 * The survey keeps listening; here the peer is steady when it has been
+	 * heard without a gap over GATE_GAP_MS for rssi_stable_s seconds and
+	 * every sighting in that stretch was at or above min_rssi. */
 	const int64_t fin = k_uptime_get() + (int64_t)cfg->gate_timeout_s * 1000;
-	uint8_t bons = 0;
+	const int64_t GATE_GAP_MS = 2500;
+	int64_t debut = 0, derniere_vue = 0;
+	uint16_t dernier_count = 0;
+	bool compte_connu = false;
+	int8_t pire = 0, dernier_rssi = 0;
+
 	led_set_state(LED_STATE_WAITING_SIGNAL);
 	LOG_INF("gate: waiting for %u s of signal at or above %d dBm (up to %u s)",
 		cfg->rssi_stable_s, cfg->min_rssi, cfg->gate_timeout_s);
+	int rc = ble_scanner_survey_start();
+	if (rc) {
+		LOG_ERR("gate: cannot listen (rc=%d) — not committing", rc);
+		return rc;
+	}
 	while (k_uptime_get() < fin) {
 		if (cancelled()) {
+			ble_scanner_survey_stop();
 			return -ECANCELED;
 		}
-		struct ble_scanner_target vu;
-		int rc = ble_scanner_seen_at(addr, 1500, &vu);
-		if (rc == -ECANCELED) {
-			return rc;
+		k_sleep(K_MSEC(250));
+		ble_scanner_survey_start();          /* keeps the survey's idle timer alive */
+
+		struct ble_scanner_seen tbl[BLE_SCANNER_SURVEY_MAX];
+		size_t total = 0;
+		size_t n = ble_scanner_survey_get(tbl, ARRAY_SIZE(tbl), 0, &total);
+		const struct ble_scanner_seen *e = NULL;
+		for (size_t k = 0; k < n; k++) {
+			if (bt_addr_le_eq(&tbl[k].addr, addr)) {
+				e = &tbl[k];
+				break;
+			}
 		}
-		if (rc == 0 && vu.rssi >= cfg->min_rssi) {
-			if (++bons >= cfg->rssi_stable_s) {
-				LOG_INF("gate: signal %d dBm, steady for %u s — committing", vu.rssi, bons);
-				return 0;
+		const int64_t now = k_uptime_get();
+		if (e && (!compte_connu || e->count != dernier_count)) {
+			compte_connu = true;
+			dernier_count = e->count;
+			dernier_rssi = e->rssi;
+			derniere_vue = now;
+			if (debut == 0) {
+				debut = now;
+				pire = e->rssi;
+			} else if (e->rssi < pire) {
+				pire = e->rssi;
 			}
-		} else {
-			if (bons != 0) {
-				LOG_WRN("gate: signal lost (%s) after %u s, starting over",
-					rc == 0 ? "too weak" : "not heard", bons);
-			}
-			bons = 0;
+		}
+		if (debut == 0) {
+			continue;
+		}
+		if (pire < cfg->min_rssi) {
+			LOG_WRN("gate: signal too weak (%d dBm) after %d s, starting over",
+				pire, (int)((now - debut) / 1000));
+			debut = 0;
+		} else if (now - derniere_vue > GATE_GAP_MS) {
+			LOG_WRN("gate: signal lost (not heard for %d ms) after %d s, starting over",
+				(int)(now - derniere_vue), (int)((now - debut) / 1000));
+			debut = 0;
+		} else if (now - debut >= (int64_t)cfg->rssi_stable_s * 1000) {
+			LOG_INF("gate: signal %d dBm (worst %d) steady for %u s — committing",
+				dernier_rssi, pire, cfg->rssi_stable_s);
+			ble_scanner_survey_stop();
+			return 0;
 		}
 	}
+	ble_scanner_survey_stop();
 	LOG_ERR("gate: no steady signal within %u s — not committing", cfg->gate_timeout_s);
 	return -ETIMEDOUT;
 }

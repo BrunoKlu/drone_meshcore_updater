@@ -131,8 +131,8 @@ struct app_config {
 	uint16_t legacy_payload;
 	/* Before the point of no return (the buttonless jump, or a Start DFU
 	 * towards a legacy bootloader): the target must have been heard at or
-	 * above min_rssi in this many consecutive 1.5 s listening windows
-	 * (so roughly that many seconds, a little more). 0 disables the check. The first ~6 s of a legacy bootloader
+	 * above min_rssi, continuously (no gap over 2.5 s), for this many
+	 * seconds. 0 disables the check. The first ~6 s of a legacy bootloader
 	 * update erase the application; a link loss there reboots it into
 	 * USB mode, unreachable over the air — this is the only protection. */
 	uint8_t  rssi_stable_s;
