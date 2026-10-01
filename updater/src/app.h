@@ -20,8 +20,11 @@ enum led_state {
 	LED_STATE_IDLE,        /* slow blink, waiting for host */
 	LED_STATE_SMP_ACTIVE,  /* mid-file upload, fast blink */
 	LED_STATE_DFU_RUNNING, /* central-role stream in progress */
+	LED_STATE_WAITING_SIGNAL,   /* target seen, link not good enough yet */
+	LED_STATE_COMMITTED,        /* past the point of no return on a legacy bootloader */
 	LED_STATE_DONE_OK,     /* last DFU succeeded, LED solid */
 	LED_STATE_DONE_FAIL,   /* last DFU failed, LED pulses */
+	LED_STATE_DONE_FAIL_RECOVERABLE, /* failed, but the bootloader still waits: come back */
 };
 
 void led_init(void);

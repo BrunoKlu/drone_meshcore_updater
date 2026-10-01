@@ -70,6 +70,11 @@ static void apply_defaults(struct app_config *c)
 	c->retry_cooldown = 5;
 	c->wedge_cooldown = 10;
 	c->legacy_payload = 20;
+	c->rssi_stable_s = 5;
+	c->commit_min_battery_pct = 30;
+	c->gate_timeout_s = 120;
+	c->rescue_minutes = 6;
+	c->debug_abort_pct = 0;
 	/* Must be one of the levels the nRF54L actually implements (see the
 	 * list in config.h) — anything else is silently clipped by the
 	 * SoftDevice, so a "default" that isn't on the list is a default the
@@ -167,6 +172,16 @@ static void apply_kv(struct app_config *c, const char *key, const char *val)
 		if (n >= 0 && n <= 600) c->wedge_cooldown = (uint16_t)n;
 	} else if (!strcmp(key, "legacy_payload")) {
 		if (n >= 20 && n <= 244) c->legacy_payload = (uint16_t)n;
+	} else if (!strcmp(key, "rssi_stable_s")) {
+		if (n >= 0 && n <= 60) c->rssi_stable_s = (uint8_t)n;
+	} else if (!strcmp(key, "commit_min_battery_pct")) {
+		if (n >= 0 && n <= 100) c->commit_min_battery_pct = (uint8_t)n;
+	} else if (!strcmp(key, "gate_timeout_s")) {
+		if (n >= 10 && n <= 600) c->gate_timeout_s = (uint16_t)n;
+	} else if (!strcmp(key, "rescue_minutes")) {
+		if (n >= 0 && n <= 30) c->rescue_minutes = (uint8_t)n;
+	} else if (!strcmp(key, "debug_abort_pct")) {
+		if (n >= 0 && n <= 100) c->debug_abort_pct = (uint8_t)n;
 	} else if (!strcmp(key, "ble_tx_power") || !strcmp(key, "tx_power")) {
 		/* `tx_power` is the old name, kept as an alias because a
 		 * silently-ignored key would leave a device running at a

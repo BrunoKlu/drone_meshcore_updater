@@ -181,6 +181,14 @@ enum dfu_status_result {
 	 * Not retried: the mapping is the same on every attempt.
 	 */
 	DFU_STATUS_RESULT_NO_APP_RULE        = 17,
+	/* The signal gate timed out: the target was never heard at or above
+	 * min_rssi for rssi_stable_s consecutive seconds. Nothing was sent. */
+	DFU_STATUS_RESULT_WEAK_SIGNAL        = 18,
+	/* The battery is below commit_min_battery_pct. Nothing was sent. */
+	DFU_STATUS_RESULT_LOW_BATTERY        = 19,
+	/* An upload to this target was left unfinished with another bundle;
+	 * sending this one would corrupt the image. Nothing was sent. */
+	DFU_STATUS_RESULT_BUNDLE_MISMATCH    = 20,
 };
 
 /* Start a new run: clears the snapshot, starts the elapsed clock, and enters

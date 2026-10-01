@@ -129,6 +129,29 @@ struct app_config {
 	 * after agreeing to a bigger MTU; 20 is the only safe value for them.
 	 * OTAFIX peers use the negotiated size (high_mtu) regardless. */
 	uint16_t legacy_payload;
+	/* Before the point of no return (the buttonless jump, or a Start DFU
+	 * towards a legacy bootloader): the target must have been heard at or
+	 * above min_rssi on every advertisement for this many consecutive
+	 * seconds. 0 disables the check. The first ~6 s of a legacy bootloader
+	 * update erase the application; a link loss there reboots it into
+	 * USB mode, unreachable over the air — this is the only protection. */
+	uint8_t  rssi_stable_s;
+	/* Do not pass the point of no return below this battery percentage.
+	 * Skipped when no cell is present (reading below 2500 mV: USB-powered
+	 * board with bare battery pads). 0 disables. */
+	uint8_t  commit_min_battery_pct;
+	/* How long the signal gate may wait for a steady signal before the run
+	 * fails with WEAK_SIGNAL, in seconds. */
+	uint16_t gate_timeout_s;
+	/* After the retry budget is spent on an upload that a legacy bootloader
+	 * is still waiting for, keep resuming for this many minutes as long as
+	 * the target is still advertising. 0 disables. */
+	uint8_t  rescue_minutes;
+	/* TEST HOOK. Abort the first attempt of every run at this percentage of
+	 * the upload (no reset is sent). Lets the bench exercise retries and
+	 * the rescue loop without rebooting the board. 0 = off; leaving it set
+	 * makes every run fail its first attempt, and the log says so. */
+	uint8_t  debug_abort_pct;
 
 	/* BLE transmit power in dBm. **The ladder is per radio**, and the
 	 * accepted range spans all of them (-40..20):

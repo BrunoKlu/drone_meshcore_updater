@@ -210,9 +210,18 @@ static uint32_t render(enum led_state st, uint32_t step)
 		return dfu_half_ms(pct);
 	}
 
+	case LED_STATE_WAITING_SIGNAL:
+		write_all(false, false, phase);     /* blue, fast: seen, not good enough yet */
+		return 125;
+	case LED_STATE_COMMITTED:
+		write_all(false, phase, !phase);    /* green/blue alternating: do not leave */
+		return 300;
 	case LED_STATE_DONE_OK:
 		write_all(false, true, false);
 		return 1000;
+	case LED_STATE_DONE_FAIL_RECOVERABLE:
+		write_all(phase, false, false);     /* red, fast: the target still waits */
+		return 125;
 
 	case LED_STATE_DONE_FAIL:
 		write_all(true, false, false);
@@ -275,9 +284,20 @@ static uint32_t render(enum led_state st, uint32_t step)
 		return dfu_half_ms(pct);
 	}
 
+	case LED_STATE_WAITING_SIGNAL:
+		write_gb(false, phase);
+		return 125;
+	case LED_STATE_COMMITTED:
+		write_gb(phase, !phase);
+		return 300;
 	case LED_STATE_DONE_OK:
 		write_gb(true, false);
 		return 1000;
+	case LED_STATE_DONE_FAIL_RECOVERABLE: {
+		bool on = k_fail_pattern[step % ARRAY_SIZE(k_fail_pattern)];
+		write_gb(on, on);
+		return 75;
+	}
 
 	case LED_STATE_DONE_FAIL: {
 		bool on = k_fail_pattern[step % ARRAY_SIZE(k_fail_pattern)];
@@ -321,9 +341,19 @@ static uint32_t render(enum led_state st, uint32_t step)
 		return dfu_half_ms(pct);
 	}
 
+	case LED_STATE_WAITING_SIGNAL:
+		gpio_pin_set_dt(&s_status, phase);
+		return 125;
+	case LED_STATE_COMMITTED:
+		gpio_pin_set_dt(&s_status, phase);
+		return 300;
 	case LED_STATE_DONE_OK:
 		gpio_pin_set_dt(&s_status, 1);
 		return 1000;
+	case LED_STATE_DONE_FAIL_RECOVERABLE:
+		gpio_pin_set_dt(&s_status,
+				k_fail_pattern[step % ARRAY_SIZE(k_fail_pattern)]);
+		return 75;
 
 	case LED_STATE_DONE_FAIL:
 		gpio_pin_set_dt(&s_status,

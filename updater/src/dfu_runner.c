@@ -361,8 +361,11 @@ static void run_thread(void *a, void *b, void *c)
 	 */
 	app_config_load();
 	const struct app_config *cfg = app_config_current();
-	LOG_INF("DFU runner: cfg ble_name='%s' min_rssi=%d retries=%u",
-		cfg->ble_name, cfg->min_rssi, cfg->retries);
+	LOG_INF("DFU runner: cfg ble_name='%s' min_rssi=%d retries=%u legacy_payload=%u "
+		"rssi_stable_s=%u commit_min_battery_pct=%u rescue_minutes=%u debug_abort_pct=%u",
+		cfg->ble_name, cfg->min_rssi, cfg->retries, cfg->legacy_payload,
+		cfg->rssi_stable_s, cfg->commit_min_battery_pct, cfg->rescue_minutes,
+		cfg->debug_abort_pct);
 
 	/* A PIN typed for this one target beats the fleet default, and for the
 	 * same reason a pinned address beats `ble_name`: the operator is

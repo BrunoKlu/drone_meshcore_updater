@@ -442,12 +442,12 @@ int main(void)
 	bool cfg_loaded = app_config_load();
 	const struct app_config *cfg = app_config_current();
 	LOG_INF("cfg %s: ble_name='%s' prn=%u high_mtu=%d retries=%u "
-		"min_rssi=%d retry_cooldown=%u wedge_cooldown=%u legacy_payload=%u "
+		"min_rssi=%d retry_cooldown=%u wedge_cooldown=%u legacy_payload=%u rssi_stable_s=%u commit_min_battery_pct=%u gate_timeout_s=%u rescue_minutes=%u debug_abort_pct=%u "
 		"ble_tx_power=%d wifi_tx_power=%d "
 		"scan_timeout=%u scan_debug=%d pkt_gap_ms=%u",
 		cfg_loaded ? "loaded" : "(defaults)",
 		cfg->ble_name, cfg->prn, cfg->high_mtu, cfg->retries,
-		cfg->min_rssi, cfg->retry_cooldown, cfg->wedge_cooldown, cfg->legacy_payload,
+		cfg->min_rssi, cfg->retry_cooldown, cfg->wedge_cooldown, cfg->legacy_payload, cfg->rssi_stable_s, cfg->commit_min_battery_pct, cfg->gate_timeout_s, cfg->rescue_minutes, cfg->debug_abort_pct,
 		cfg->ble_tx_power, cfg->wifi_tx_power,
 		cfg->scan_timeout, cfg->scan_debug, cfg->pkt_gap_ms);
 	LOG_INF("cfg: auto_flash=%d ext_antenna=%d (switch %s) fast_charge=%d (%s)",

@@ -59,6 +59,9 @@ export const RESULT = {
   AUTH_FAILED: 15,
   UNREACHABLE_TARGET: 16,
   NO_APP_RULE: 17,
+  WEAK_SIGNAL: 18,
+  LOW_BATTERY: 19,
+  BUNDLE_MISMATCH: 20,
 };
 
 /* Present tense, and phrased as what the device is doing rather than as the
@@ -123,6 +126,13 @@ export const RESULT_LABEL = {
     "an application to the target's DFU-mode name (or sends the bootloader " +
     "again). The target is in DFU mode with nothing to boot: add a rule for " +
     "that name and run again",
+  [RESULT.WEAK_SIGNAL]: "the target was never heard steadily above min_rssi for " +
+    "rssi_stable_s seconds; nothing was sent — get closer or aim better",
+  [RESULT.LOW_BATTERY]: "the updater's battery is below commit_min_battery_pct; " +
+    "nothing was sent",
+  [RESULT.BUNDLE_MISMATCH]: "an upload to this target was left unfinished with another " +
+    "bundle; sending this one would corrupt it — send the unfinished bundle, or " +
+    "power-cycle the target",
 };
 
 /* Results the operator can answer by supplying a PIN. Named rather than

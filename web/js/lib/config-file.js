@@ -589,6 +589,29 @@ export const CONFIG_SCHEMA = [
            receipt timeout at 1 %. OTAFIX bootloaders take the negotiated size
            regardless of this. Leave 20 unless you know the bootloader takes more.`,
   },
+  { key: "rssi_stable_s", label: "rssi_stable_s", title: "Steady signal before the point of no return",
+    type: "int", def: 5, min: 0, max: 60, unit: "s",
+    desc: `Every advertisement of the target must be at or above min_rssi for this
+           many consecutive seconds before the buttonless jump. The first seconds
+           of a legacy bootloader update erase the application and a link loss
+           there loses the target for good. 0 disables the check.` },
+  { key: "commit_min_battery_pct", label: "commit_min_battery_pct", title: "Minimum battery to commit",
+    type: "int", def: 30, min: 0, max: 100, unit: "pct",
+    desc: `Do not pass the point of no return below this charge. Ignored when no
+           cell is soldered on (USB power). 0 disables.` },
+  { key: "gate_timeout_s", label: "gate_timeout_s", title: "Signal gate timeout",
+    type: "int", def: 120, min: 10, max: 600, unit: "s",
+    desc: `How long to wait for a steady signal before giving up with WEAK_SIGNAL.` },
+  { key: "rescue_minutes", label: "rescue_minutes", title: "Keep resuming after the retries",
+    type: "int", def: 6, min: 0, max: 30, unit: "min",
+    desc: `When the retry budget is spent but a legacy bootloader still waits for
+           the rest of its image, keep resuming for this long while the target is
+           seen. 0 disables.` },
+  { key: "debug_abort_pct", label: "debug_abort_pct", title: "TEST HOOK: abort the first attempt",
+    type: "int", def: 0, min: 0, max: 100, unit: "pct",
+    desc: `Bench tool. Aborts the first attempt of every run at this percentage of
+           the upload without resetting the target, to exercise retries and the
+           rescue loop. Leave at 0 in the field: every run would fail first.` },
 ];
 
 /* Flat key → descriptor lookup. */
