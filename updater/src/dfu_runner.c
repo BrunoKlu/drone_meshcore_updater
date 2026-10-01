@@ -719,7 +719,11 @@ encore:
 			}
 			led_set_state(LED_STATE_COMMITTED);
 		}
-		dfu_client_set_debug_abort(attempt == 0 ? cfg->debug_abort_pct : 0);
+		/* The test abort fires once per run, on the very first attempt:
+		 * never on a retry, never on a rescue pass (which rewinds the
+		 * attempt counter). Re-arming it there made every rescue pass
+		 * resume at the threshold and abort on the spot (bench, D6). */
+		dfu_client_set_debug_abort(attempt == 0 && s_fin_secours == 0 ? cfg->debug_abort_pct : 0);
 		enum dfu_result r = target.tp->run(&target, &payload, cfg);
 		target.tp->release(&target);
 		/* Checked before the result is interpreted: an aborted transfer
@@ -860,6 +864,14 @@ encore:
 		if (k_uptime_get() < s_fin_secours &&
 		    ble_scanner_seen_at(&s_derniere.ble.addr, 30000, &vu) == 0) {
 			LOG_WRN("rescue: the target still waits (%d dBm) — resuming once more", vu.rssi);
+			/* Same breathing room as a wedge: a pass that just failed
+			 * must not hammer the bootloader once a second. */
+			if (cfg->wedge_cooldown) {
+				dfu_status_set_state(DFU_STATUS_COOLDOWN);
+				if (runner_sleep(K_SECONDS(cfg->wedge_cooldown))) {
+					goto stopped;
+				}
+			}
 			attempt = cfg->retries - 1;
 			goto encore;
 		}

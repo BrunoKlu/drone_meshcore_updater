@@ -49,8 +49,18 @@ static struct {
 	 * survey; the +1 keeps hold of it across a buttonless jump into the
 	 * bootloader, which advertises one MAC above the application. */
 	const bt_addr_le_t       *pinned_addr;
+	/* Pinned mode only: a sighting of the pinned peer that carried no
+	 * name, kept for NAME_GRACE_MS in case the name follows. Meshtastic
+	 * puts its name in the scan response alone, and the advertisement
+	 * is always reported first — accepting that first report makes an
+	 * auto-flash mapping keyed on the name impossible (bench, D5). */
+	struct ble_scanner_target nameless;
+	bool                      have_nameless;
+	int64_t                   nameless_until;
 	bool                      debug;
 } s_ctx;
+
+#define NAME_GRACE_MS 1500
 
 static bool s_debug;
 static bool s_sem_inited;
@@ -262,6 +272,21 @@ static void scan_rx_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 	}
 
 matched:
+	if (s_ctx.pinned_addr != NULL && ap.name[0] == '\0') {
+		if (!s_ctx.have_nameless) {
+			bt_addr_le_copy(&s_ctx.nameless.addr, addr);
+			s_ctx.nameless.rssi = rssi;
+			s_ctx.nameless.name[0] = '\0';
+			s_ctx.nameless.dfu_uuid = ap.has_dfu_uuid;
+			s_ctx.have_nameless = true;
+			s_ctx.nameless_until = k_uptime_get() + NAME_GRACE_MS;
+			return;
+		}
+		if (k_uptime_get() < s_ctx.nameless_until) {
+			return;    /* still waiting for a report with the name */
+		}
+		/* Grace over: the peer really advertises without a name. */
+	}
 	bt_addr_le_copy(&s_ctx.match.addr, addr);
 	s_ctx.match.rssi = rssi;
 	memcpy(s_ctx.match.name, ap.name, sizeof(ap.name));
@@ -312,6 +337,7 @@ static int scan_and_wait(uint32_t timeout_ms)
 
 	atomic_clear(&s_cancel);
 	s_ctx.found = false;
+	s_ctx.have_nameless = false;
 	s_ctx.debug = s_debug;
 	memset(&s_ctx.match, 0, sizeof(s_ctx.match));
 
@@ -345,7 +371,16 @@ static int scan_and_wait(uint32_t timeout_ms)
 		LOG_INF("scan cancelled");
 		return -ECANCELED;
 	}
-	if (rc == -EAGAIN) return -ETIMEDOUT;
+	if (rc == -EAGAIN) {
+		/* The pinned peer was heard, nameless, and then fell silent
+		 * before the grace ran out: a sighting is still a match. */
+		if (s_ctx.have_nameless && !s_ctx.found) {
+			s_ctx.match = s_ctx.nameless;
+			s_ctx.found = true;
+			return 0;
+		}
+		return -ETIMEDOUT;
+	}
 	return rc;
 }
 

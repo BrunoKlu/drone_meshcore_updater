@@ -36,6 +36,12 @@ int upload_memo_write(const bt_addr_le_t *addr, const char *path)
 int upload_memo_read(bt_addr_le_t *addr, char *path, size_t path_len)
 {
 	char line[BT_ADDR_LE_STR_LEN + 256];
+	struct fs_dirent st;
+	/* No memo is the normal case; asked with fs_stat first so that the
+	 * fs layer does not log "file open error" on every run. */
+	if (fs_stat(MEMO_PATH, &st) != 0) {
+		return -ENOENT;
+	}
 	struct fs_file_t f;
 	fs_file_t_init(&f);
 	int rc = fs_open(&f, MEMO_PATH, FS_O_READ);
