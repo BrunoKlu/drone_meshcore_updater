@@ -596,7 +596,7 @@ encore:
 		    upload_memo_matches(&memo_addr, &target.ble.addr)) {
 			if (bundle_open && strcmp(memo_path, path_held) != 0) {
 				LOG_ERR("an upload of %s to this target was left unfinished; %s is not it. "
-					"Send %s, or power-cycle the target.", memo_path, path_held, memo_path);
+					"Send %s, or delete /lfs1/en_cours.txt.", memo_path, path_held, memo_path);
 				status_result = DFU_STATUS_RESULT_BUNDLE_MISMATCH;
 				target.tp->release(&target);
 				goto fail;
@@ -692,8 +692,11 @@ encore:
 			goto fail;
 		}
 
-		if (attempt == 0 && !chained_from_bl && !memo_reprise &&
-		    !strcmp(target.tp->name, "ble-legacy-dfu")) {
+		/* On every attempt, not just the first: a retry after a lost
+		 * connection reaches the same ~6 s erase window, and a resume
+		 * on a bad link would only drop again. Five seconds per attempt
+		 * is nothing next to what the bootloader waits (review, plan 3). */
+		if (!chained_from_bl && !strcmp(target.tp->name, "ble-legacy-dfu")) {
 			rc = garde_batterie(cfg);
 			if (rc != 0) {
 				status_result = DFU_STATUS_RESULT_LOW_BATTERY;
@@ -723,7 +726,8 @@ encore:
 		 * never on a retry, never on a rescue pass (which rewinds the
 		 * attempt counter). Re-arming it there made every rescue pass
 		 * resume at the threshold and abort on the spot (bench, D6). */
-		dfu_client_set_debug_abort(attempt == 0 && s_fin_secours == 0 ? cfg->debug_abort_pct : 0);
+		dfu_client_set_debug_abort(attempt == 0 && s_fin_secours == 0 && !cfg->auto_flash
+					   ? cfg->debug_abort_pct : 0);    /* never in flight */
 		enum dfu_result r = target.tp->run(&target, &payload, cfg);
 		target.tp->release(&target);
 		/* Checked before the result is interpreted: an aborted transfer
@@ -853,6 +857,7 @@ encore:
 		}
 	}
 	if ((memo_written || memo_reprise) && cfg->rescue_minutes != 0 && !cancelled()) {
+secours:
 		/* The bootloader may still be waiting with a partial image. Keep
 		 * resuming while it is heard, for a bounded time: on a rooftop
 		 * the drone is still there and nothing else can save the node. */
@@ -861,8 +866,12 @@ encore:
 		}
 		led_set_state(LED_STATE_DONE_FAIL_RECOVERABLE);
 		struct ble_scanner_target vu;
-		if (k_uptime_get() < s_fin_secours &&
-		    ble_scanner_seen_at(&s_derniere.ble.addr, 30000, &vu) == 0) {
+		int vu_rc = k_uptime_get() < s_fin_secours
+			  ? ble_scanner_seen_at(&s_derniere.ble.addr, 30000, &vu) : -ETIMEDOUT;
+		if (vu_rc == -ECANCELED || cancelled()) {
+			goto stopped;
+		}
+		if (vu_rc == 0) {
 			LOG_WRN("rescue: the target still waits (%d dBm) — resuming once more", vu.rssi);
 			/* Same breathing room as a wedge: a pass that just failed
 			 * must not hammer the bootloader once a second. */
@@ -878,7 +887,8 @@ encore:
 		s_fin_secours = 0;
 		LOG_ERR("DFU runner: FAILED after %u attempts and the rescue window; the target "
 			"keeps the partial upload — come back and send %s", cfg->retries, path_held);
-		dfu_status_finish(DFU_STATUS_RESULT_RETRIES_EXHAUSTED);
+		/* The last attempt's own reason, not a blanket "exhausted". */
+		dfu_status_finish(status_result);
 		goto done;
 	}
 	LOG_ERR("DFU runner: FAILED after %u attempts", cfg->retries);
@@ -894,6 +904,13 @@ stopped:
 	goto done;
 
 fail:
+	/* A memo means the target may hold a partial image: that is never a
+	 * plain failure. Weak signal, lost target or a refused PIN on a later
+	 * pass all go through the rescue loop, which keeps the red LED fast
+	 * and the attempts coming while the target is heard. */
+	if ((memo_written || memo_reprise) && cfg->rescue_minutes != 0 && !cancelled()) {
+		goto secours;
+	}
 	led_set_state(LED_STATE_DONE_FAIL);
 	dfu_status_finish(status_result);
 done:

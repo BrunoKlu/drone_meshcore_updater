@@ -591,8 +591,8 @@ export const CONFIG_SCHEMA = [
   },
   { key: "rssi_stable_s", label: "rssi_stable_s", title: "Steady signal before the point of no return",
     type: "int", def: 5, min: 0, max: 60, unit: "s",
-    desc: `Every advertisement of the target must be at or above min_rssi for this
-           many consecutive seconds before the buttonless jump. The first seconds
+    desc: `The target must be heard at or above min_rssi in this many consecutive
+           1.5 s listening windows (about that many seconds) before the jump. The first seconds
            of a legacy bootloader update erase the application and a link loss
            there loses the target for good. 0 disables the check.` },
   { key: "commit_min_battery_pct", label: "commit_min_battery_pct", title: "Minimum battery to commit",

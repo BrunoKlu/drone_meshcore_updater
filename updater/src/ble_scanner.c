@@ -372,9 +372,13 @@ static int scan_and_wait(uint32_t timeout_ms)
 		return -ECANCELED;
 	}
 	if (rc == -EAGAIN) {
+		/* A report may have landed between the timeout and the stop. */
+		if (s_ctx.found) {
+			return 0;
+		}
 		/* The pinned peer was heard, nameless, and then fell silent
 		 * before the grace ran out: a sighting is still a match. */
-		if (s_ctx.have_nameless && !s_ctx.found) {
+		if (s_ctx.have_nameless) {
 			s_ctx.match = s_ctx.nameless;
 			s_ctx.found = true;
 			return 0;
