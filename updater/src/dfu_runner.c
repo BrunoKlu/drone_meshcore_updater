@@ -166,9 +166,15 @@ static int garde_signal(const struct app_config *cfg, const bt_addr_le_t *addr)
 	 * heard without a gap over GATE_GAP_MS for rssi_stable_s seconds and
 	 * every sighting in that stretch was at or above min_rssi. */
 	const int64_t fin = k_uptime_get() + (int64_t)cfg->gate_timeout_s * 1000;
-	const int64_t GATE_GAP_MS = 2500;
+	/* A Meshtastic node at rest advertises about once a second and a 50 %
+	 * scan duty cycle hears half of that: gaps of 2-3 s are normal at any
+	 * distance, so the gap tolerance is 4 s and "steady" also asks for at
+	 * least GATE_MIN_VUES sightings over the whole window (bench, 01/10). */
+	const int64_t GATE_GAP_MS = 4000;
+	const unsigned GATE_MIN_VUES = 3;
 	int64_t debut = 0, derniere_vue = 0;
 	uint16_t dernier_count = 0;
+	unsigned vues = 0;
 	bool compte_connu = false;
 	int8_t pire = 0, dernier_rssi = 0;
 
@@ -207,8 +213,12 @@ static int garde_signal(const struct app_config *cfg, const bt_addr_le_t *addr)
 			if (debut == 0) {
 				debut = now;
 				pire = e->rssi;
-			} else if (e->rssi < pire) {
-				pire = e->rssi;
+				vues = 1;
+			} else {
+				vues++;
+				if (e->rssi < pire) {
+					pire = e->rssi;
+				}
 			}
 		}
 		if (debut == 0) {
@@ -222,9 +232,9 @@ static int garde_signal(const struct app_config *cfg, const bt_addr_le_t *addr)
 			LOG_WRN("gate: signal lost (not heard for %d ms) after %d s, starting over",
 				(int)(now - derniere_vue), (int)((now - debut) / 1000));
 			debut = 0;
-		} else if (now - debut >= (int64_t)cfg->rssi_stable_s * 1000) {
-			LOG_INF("gate: signal %d dBm (worst %d) steady for %u s — committing",
-				dernier_rssi, pire, cfg->rssi_stable_s);
+		} else if (now - debut >= (int64_t)cfg->rssi_stable_s * 1000 && vues >= GATE_MIN_VUES) {
+			LOG_INF("gate: signal %d dBm (worst %d, %u sightings) steady for %u s — committing",
+				dernier_rssi, pire, vues, cfg->rssi_stable_s);
 			ble_scanner_survey_stop();
 			return 0;
 		}
