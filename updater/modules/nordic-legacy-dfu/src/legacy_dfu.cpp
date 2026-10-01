@@ -943,6 +943,11 @@ Failure Session::upload_firmware()
 	uint32_t sent_into_erase = 0;
 
 	while (bytes_sent_ < image_size_) {
+		if (params_.abort_at_bytes != 0 && bytes_sent_ >= params_.abort_at_bytes) {
+			LOG_WRN("debug: aborting the upload at %u %% as configured",
+				(unsigned)((uint64_t)bytes_sent_ * 100 / image_size_));
+			return Failure::of(Result::Aborted);
+		}
 		uint32_t want = image_size_ - bytes_sent_;
 		if (want > payload_size_) {
 			want = payload_size_;

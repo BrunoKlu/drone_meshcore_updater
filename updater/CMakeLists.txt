@@ -38,6 +38,7 @@ target_sources(app PRIVATE
   src/firmware_map.c
   src/dfu_client.cpp
   src/dfu_runner.c
+  src/upload_memo.c
   src/dfu_status.c
   src/dfu_transport.c
   src/transport_ble.c

@@ -305,6 +305,9 @@ extern "C" void dfu_client_abort(void)
 	k_mutex_unlock(&s_active_lock);
 }
 
+static uint8_t s_debug_abort_pct;
+extern "C" void dfu_client_set_debug_abort(uint8_t pct) { s_debug_abort_pct = pct; }
+
 extern "C" enum dfu_result dfu_client_run(const struct ble_scanner_target *target,
 					   const struct firmware_bundle *bundle,
 					   const struct app_config *cfg)
@@ -428,6 +431,11 @@ extern "C" enum dfu_result dfu_client_run(const struct ble_scanner_target *targe
 	params.assume_dfu_mode = false;
 	params.legacy_payload = cfg->legacy_payload;
 	params.resume_interrupted = true;
+	params.abort_at_bytes = s_debug_abort_pct ? (uint32_t)((uint64_t)image.size() * s_debug_abort_pct / 100) : 0;
+	if (params.abort_at_bytes) {
+		LOG_WRN("debug_abort_pct=%u: this attempt will abort at %u bytes", s_debug_abort_pct,
+			params.abort_at_bytes);
+	}
 	/* The Java blocks forever waiting on a notification and relies on a
 	 * user to cancel. There is nobody to cancel here, so bound it. */
 	params.operation_timeout_ms = 30000;

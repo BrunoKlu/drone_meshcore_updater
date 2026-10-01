@@ -53,6 +53,10 @@ enum dfu_result {
  * notes/dfu-tuning.md for why those values are what they are — every one of
  * them was measured, and most are counter-intuitive.
  */
+/* Test hook: abort the first attempt at this percentage of the upload (0 = off).
+ * Set by the runner before every attempt. */
+void dfu_client_set_debug_abort(uint8_t pct);
+
 enum dfu_result dfu_client_run(const struct ble_scanner_target *target,
 			       const struct firmware_bundle *bundle,
 			       const struct app_config *cfg);

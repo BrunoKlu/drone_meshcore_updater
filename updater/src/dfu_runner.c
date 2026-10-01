@@ -28,6 +28,8 @@
 #include "dfu_status.h"
 #include "survey.h"
 #include "battery.h"
+#include "upload_memo.h"
+#include <hal/nrf_power.h>
 #include "app.h"
 
 LOG_MODULE_REGISTER(dfu_runner, LOG_LEVEL_INF);
@@ -110,6 +112,8 @@ static k_tid_t         s_tid;
 
 static struct k_mutex   s_lock;
 static bool             s_busy;
+static struct dfu_target s_derniere;      /* last target found, for the rescue loop */
+static int64_t          s_fin_secours;   /* rescue window end, 0 = not in rescue */
 
 /*
  * Stop support.
@@ -139,6 +143,78 @@ static bool runner_sleep(k_timeout_t d)
 		return true;
 	}
 	return k_sem_take(&s_wake, d) == 0;
+}
+
+/*
+ * The point of no return is the buttonless jump (a legacy bootloader then
+ * erases the application within seconds, and a link loss during that erase
+ * reboots it into USB mode — unreachable over the air). So before it, the
+ * target must have been heard at or above min_rssi on every advertisement
+ * for rssi_stable_s consecutive seconds. Applied even to a pinned target:
+ * the pinned scan skips min_rssi so an operator can *find* a weak device,
+ * but committing to it unattended is a different decision.
+ */
+static int garde_signal(const struct app_config *cfg, const bt_addr_le_t *addr)
+{
+	if (cfg->rssi_stable_s == 0) {
+		return 0;
+	}
+	const int64_t fin = k_uptime_get() + (int64_t)cfg->gate_timeout_s * 1000;
+	uint8_t bons = 0;
+	led_set_state(LED_STATE_WAITING_SIGNAL);
+	LOG_INF("gate: waiting for %u s of signal at or above %d dBm (up to %u s)",
+		cfg->rssi_stable_s, cfg->min_rssi, cfg->gate_timeout_s);
+	while (k_uptime_get() < fin) {
+		if (cancelled()) {
+			return -ECANCELED;
+		}
+		struct ble_scanner_target vu;
+		int rc = ble_scanner_seen_at(addr, 1500, &vu);
+		if (rc == -ECANCELED) {
+			return rc;
+		}
+		if (rc == 0 && vu.rssi >= cfg->min_rssi) {
+			if (++bons >= cfg->rssi_stable_s) {
+				LOG_INF("gate: signal %d dBm, steady for %u s — committing", vu.rssi, bons);
+				return 0;
+			}
+		} else {
+			if (bons != 0) {
+				LOG_WRN("gate: signal lost (%s) after %u s, starting over",
+					rc == 0 ? "too weak" : "not heard", bons);
+			}
+			bons = 0;
+		}
+	}
+	LOG_ERR("gate: no steady signal within %u s — not committing", cfg->gate_timeout_s);
+	return -ETIMEDOUT;
+}
+
+static int garde_batterie(const struct app_config *cfg)
+{
+	struct battery_status st;
+	if (cfg->commit_min_battery_pct == 0 || !battery_present() || battery_read(&st) != 0) {
+		return 0;
+	}
+#if defined(NRF_POWER)
+	/* On USB the divider reads the charger, not a cell (3.7-4.1 V with
+	 * nothing soldered on): the rule only means something on battery. */
+	if (nrf_power_usbregstatus_vbusdet_get(NRF_POWER)) {
+		LOG_INF("gate: USB power present, battery rule skipped (%u mV read)", st.millivolts);
+		return 0;
+	}
+#endif
+	if (st.millivolts < 2500) {
+		LOG_INF("gate: no cell on the battery pads (%u mV), battery rule skipped", st.millivolts);
+		return 0;
+	}
+	if (st.percent < cfg->commit_min_battery_pct) {
+		LOG_ERR("gate: battery %u %% (%u mV) is below commit_min_battery_pct %u — not committing",
+			st.percent, st.millivolts, cfg->commit_min_battery_pct);
+		return -EAGAIN;
+	}
+	LOG_INF("gate: battery %u %% (%u mV)", st.percent, st.millivolts);
+	return 0;
 }
 static char             s_path[DFU_PATH_MAX + 1];
 /* The peer the operator picked, opaque to this file — see dfu_transport.h.
@@ -395,6 +471,10 @@ static void run_thread(void *a, void *b, void *c)
 	 */
 	const bool auto_mode  = (s_path[0] == '\0');
 	bool       bundle_open = false;
+	bool memo_written = false;        /* this run noted a SD/BL upload in en_cours.txt */
+	bool memo_reprise = false;        /* this run continues an upload noted by an earlier run */
+	char memo_path[DFU_PATH_MAX + 1];
+	bt_addr_le_t memo_addr;
 
 	/*
 	 * ---- A bootloader package is half an update ----------------------
@@ -443,6 +523,7 @@ static void run_thread(void *a, void *b, void *c)
 	}
 
 	uint8_t attempt = 0;
+encore:
 	while (attempt < cfg->retries) {
 		/* Re-read config on *every* attempt, not just once per run.
 		 * A run can span many minutes — five attempts separated by
@@ -508,6 +589,34 @@ static void run_thread(void *a, void *b, void *c)
 			goto fail;
 		}
 		dfu_status_target(target.name);
+		s_derniere = target;
+		memo_reprise = false;
+		if (!strcmp(target.tp->name, "ble-legacy-dfu") &&
+		    upload_memo_read(&memo_addr, memo_path, sizeof(memo_path)) == 0 &&
+		    upload_memo_matches(&memo_addr, &target.ble.addr)) {
+			if (bundle_open && strcmp(memo_path, path_held) != 0) {
+				LOG_ERR("an upload of %s to this target was left unfinished; %s is not it. "
+					"Send %s, or power-cycle the target.", memo_path, path_held, memo_path);
+				status_result = DFU_STATUS_RESULT_BUNDLE_MISMATCH;
+				target.tp->release(&target);
+				goto fail;
+			}
+			if (!bundle_open) {
+				LOG_WRN("an upload of %s to this target was left unfinished: sending it "
+					"again instead of the mapping's pick", memo_path);
+				rc = open_payload(memo_path, &payload, path_held, sizeof(path_held),
+						  err, sizeof(err));
+				if (rc < 0) {
+					LOG_ERR("bundle: %s (rc=%d)", err, rc);
+					status_result = DFU_STATUS_RESULT_BAD_BUNDLE;
+					target.tp->release(&target);
+					goto fail;
+				}
+				dfu_status_bundle(memo_path);
+				bundle_open = true;
+			}
+			memo_reprise = true;
+		}
 
 		/* Resolve the bundle once, from the first peer we find, and
 		 * keep it for the rest of the run. Re-resolving per attempt
@@ -583,6 +692,34 @@ static void run_thread(void *a, void *b, void *c)
 			goto fail;
 		}
 
+		if (attempt == 0 && !chained_from_bl && !memo_reprise &&
+		    !strcmp(target.tp->name, "ble-legacy-dfu")) {
+			rc = garde_batterie(cfg);
+			if (rc != 0) {
+				status_result = DFU_STATUS_RESULT_LOW_BATTERY;
+				target.tp->release(&target);
+				goto fail;
+			}
+			rc = garde_signal(cfg, &target.ble.addr);
+			if (rc == -ECANCELED) {
+				target.tp->release(&target);
+				goto stopped;
+			}
+			if (rc != 0) {
+				status_result = DFU_STATUS_RESULT_WEAK_SIGNAL;
+				target.tp->release(&target);
+				goto fail;
+			}
+			led_set_state(LED_STATE_DFU_RUNNING);
+		}
+		if (!strcmp(target.tp->name, "ble-legacy-dfu") && payload.kind == DFU_PAYLOAD_ZIP &&
+		    (payload.zip.type & (FW_TYPE_SOFTDEVICE | FW_TYPE_BOOTLOADER))) {
+			if (upload_memo_write(&target.ble.addr, path_held) == 0) {
+				memo_written = true;
+			}
+			led_set_state(LED_STATE_COMMITTED);
+		}
+		dfu_client_set_debug_abort(attempt == 0 ? cfg->debug_abort_pct : 0);
 		enum dfu_result r = target.tp->run(&target, &payload, cfg);
 		target.tp->release(&target);
 		/* Checked before the result is interpreted: an aborted transfer
@@ -635,6 +772,11 @@ static void run_thread(void *a, void *b, void *c)
 
 		switch (r) {
 		case DFU_OK:
+			if (memo_written || memo_reprise) {
+				upload_memo_clear();
+				memo_written = false;
+				memo_reprise = false;
+			}
 			if (auto_mode && !chained_from_bl &&
 			    payload.kind == DFU_PAYLOAD_ZIP &&
 			    (payload.zip.type & (FW_TYPE_SOFTDEVICE | FW_TYPE_BOOTLOADER))) {
@@ -706,11 +848,32 @@ static void run_thread(void *a, void *b, void *c)
 			break;
 		}
 	}
+	if ((memo_written || memo_reprise) && cfg->rescue_minutes != 0 && !cancelled()) {
+		/* The bootloader may still be waiting with a partial image. Keep
+		 * resuming while it is heard, for a bounded time: on a rooftop
+		 * the drone is still there and nothing else can save the node. */
+		if (s_fin_secours == 0) {
+			s_fin_secours = k_uptime_get() + (int64_t)cfg->rescue_minutes * 60000;
+		}
+		led_set_state(LED_STATE_DONE_FAIL_RECOVERABLE);
+		struct ble_scanner_target vu;
+		if (k_uptime_get() < s_fin_secours &&
+		    ble_scanner_seen_at(&s_derniere.ble.addr, 30000, &vu) == 0) {
+			LOG_WRN("rescue: the target still waits (%d dBm) — resuming once more", vu.rssi);
+			attempt = cfg->retries - 1;
+			goto encore;
+		}
+		s_fin_secours = 0;
+		LOG_ERR("DFU runner: FAILED after %u attempts and the rescue window; the target "
+			"keeps the partial upload — come back and send %s", cfg->retries, path_held);
+		dfu_status_finish(DFU_STATUS_RESULT_RETRIES_EXHAUSTED);
+		goto done;
+	}
 	LOG_ERR("DFU runner: FAILED after %u attempts", cfg->retries);
-
 	goto fail;
 
 stopped:
+	s_fin_secours = 0;
 	/* Not a failure, so no red LED and no sticky terminal state — the
 	 * point of Stop is to leave a clean slate to retry from. */
 	LOG_WRN("DFU runner: stopped by request after %u attempt(s)", attempt + 1);
@@ -722,6 +885,7 @@ fail:
 	led_set_state(LED_STATE_DONE_FAIL);
 	dfu_status_finish(status_result);
 done:
+	s_fin_secours = 0;
 	/* One close for every exit path — auto mode can bail before a bundle
 	 * was ever opened, so it has to be conditional.
 	 */

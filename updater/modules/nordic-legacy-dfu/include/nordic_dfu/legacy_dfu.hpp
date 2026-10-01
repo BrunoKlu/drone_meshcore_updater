@@ -270,6 +270,11 @@ struct Parameters {
 	 * original reset-and-restart, which it survives.
 	 */
 	bool resume_interrupted = true;
+	/**
+	 * Test hook: abort the upload (Result::Aborted, no reset towards a
+	 * legacy bootloader) once this many bytes have been sent. 0 = off.
+	 */
+	uint32_t abort_at_bytes = 0;
 
 	/**
 	 * Per-operation timeout in milliseconds, or 0 for none.
